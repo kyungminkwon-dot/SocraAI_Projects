@@ -1,4 +1,5 @@
 -- simple_cte 테이블 및 각 컬럼명은 비식별화 처리되어있습니다.
+-- 편의상 3개 이벤트만 예시로 첨부했습니다.  실제 이벤트 종류는 근무 당시에 17개였습니다.
 
 {{
     config(
@@ -25,7 +26,7 @@
     )
 }}
 
--- Incremental 업데이트를 위한 기준점 정의
+-- 7일간의 Look-back Window를 가진 Incremental 업데이트 기준점
 {% if is_incremental() %}
 , incr_base AS (
   SELECT COALESCE(MAX(event_at), TIMESTAMP('1970-01-01')) AS latest_ts
@@ -41,7 +42,7 @@
         -- 고유 식별자(SK) 생성
         {{ dbt_utils.generate_surrogate_key(['"service_b"','"access_records"','ar.record_id','"SYS_ACCESS_LOGIN"']) }} AS fct_event__sk,
         
-        -- 차원 키 해시 처리
+        -- 해시 처리된 차원 키
         XXHASH64(u.user_id) AS dim_user_id,
         XXHASH64(u.account_key) AS dim_account_id,
         XXHASH64('DUMMY_VAL') AS dim_aux_id,
@@ -50,21 +51,21 @@
         u.user_id AS user_id,
         u.account_key AS account_key,
 
-        -- 세션 정보 통합
+        -- 세션 ID 표준화
         XXHASH64('access_record', CAST(ar.record_id AS STRING)) AS session_id,
         'access_record' AS session_src,
         CAST(ar.record_id AS STRING) AS original_session_id,
 
-        -- 이벤트 분류 표준화
+        -- 이벤트 명명 표준 준수
         'SYSTEM' AS event_category,
         'LOGIN'  AS event_action,
 
-        -- 시간대 표준화 (KST 변환)
+        -- 시간대 표준화 (KST)
         ar.created_at AS event_at,
-        from_utc_timestamp(ar.created_at, 'Asia/Seoul')             AS event_at_local,
-        to_date(from_utc_timestamp(ar.created_at, 'Asia/Seoul'))    AS event_date_local,
+        from_utc_timestamp(ar.created_at, 'Asia/Seoul')             AS event_at_kst,
+        to_date(from_utc_timestamp(ar.created_at, 'Asia/Seoul'))    AS event_date_at_kst,
 
-        -- 메타데이터
+        -- 데이터 거버넌스용 메타데이터
         CURRENT_TIMESTAMP() AS _dw_processed_at
 
     FROM access_log ar
@@ -100,8 +101,8 @@
         'START'   AS event_action,
 
         cs.created_at AS event_at,
-        from_utc_timestamp(cs.created_at, 'Asia/Seoul')             AS event_at_local,
-        to_date(from_utc_timestamp(cs.created_at, 'Asia/Seoul'))    AS event_date_local,
+        from_utc_timestamp(cs.created_at, 'Asia/Seoul')             AS event_at_kst,
+        to_date(from_utc_timestamp(cs.created_at, 'Asia/Seoul'))    AS event_date_at_kst,
 
         CURRENT_TIMESTAMP() AS _dw_processed_at
 
@@ -119,11 +120,10 @@
 
 ------------------------------------------------------------------------------------------------
 -- 3) 중단 후 재개 이벤트 (Virtual Event: Resumed)
--- 실제 로그 부재 상황을 비즈니스 로직으로 극복
+-- 원천 로그 부재 상황을 극복하기 위한 가공 로직
 ------------------------------------------------------------------------------------------------
 , content_resumed AS ( 
     SELECT
-        -- 업데이트 일자를 포함하여 동일 세션 내 재개 이벤트 구분
         {{ dbt_utils.generate_surrogate_key(['"service_b"','"content_session"','cs.session_id','TO_DATE(from_utc_timestamp(cs.updated_at, \'Asia/Seoul\'))','"CONTENT_RESUMED"']) }} AS fct_event__sk,
         
         XXHASH64(u.user_id) AS dim_user_id,
@@ -140,10 +140,9 @@
         'CONTENT' AS event_category,
         'RESUMED' AS event_action,
 
-        -- 재개 시점 집계 로직
         MIN(cs.updated_at) AS event_at,
-        from_utc_timestamp(MIN(cs.updated_at), 'Asia/Seoul')             AS event_at_local,
-        to_date(from_utc_timestamp(MIN(cs.updated_at), 'Asia/Seoul'))    AS event_date_local,
+        from_utc_timestamp(MIN(cs.updated_at), 'Asia/Seoul')             AS event_at_kst,
+        to_date(from_utc_timestamp(MIN(cs.updated_at), 'Asia/Seoul'))    AS event_date_at_kst,
 
         CURRENT_TIMESTAMP() AS _dw_processed_at
 
@@ -155,7 +154,7 @@
       AND cs.updated_at IS NOT NULL
       AND cs.completed_at IS NULL  
       AND cs.is_deleted IS FALSE
-      -- 비즈니스 로직 적용: 24시간 이상 경과 후 업데이트 시 '재개'로 정의
+      -- 생성 대비 24시간 이후 업데이트 발생 시 '재개'로 간주
       AND DATEDIFF(cs.updated_at, cs.created_at) >= 1
       {% if is_incremental() %}
       AND cs.updated_at > (SELECT latest_ts FROM incr_base) - INTERVAL 7 DAYS
@@ -165,7 +164,7 @@
 )
 
 ------------------------------------------------------------------------------------------------
--- 최종 유니온 및 결과 출력
+-- 최종 통합 (Final Union)
 ------------------------------------------------------------------------------------------------
 , final_union AS (
     SELECT * FROM base_access
