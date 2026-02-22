@@ -26,7 +26,7 @@
     )
 }}
 
--- 7일간의 Look-back Window를 가진 Incremental 업데이트 기준점
+-- 7일간의 Look-back Window를 가진 증분처리 기준점
 {% if is_incremental() %}
 , incr_base AS (
   SELECT COALESCE(MAX(event_at), TIMESTAMP('1970-01-01')) AS latest_ts
@@ -42,21 +42,21 @@
         -- 고유 식별자(SK) 생성
         {{ dbt_utils.generate_surrogate_key(['"service_b"','"access_records"','ar.record_id','"SYS_ACCESS_LOGIN"']) }} AS fct_event__sk,
         
-        -- 해시 처리된 차원 키
+        -- 해시 처리된 외래키 (테이블 병합용으로 사용)
         XXHASH64(u.user_id) AS dim_user_id,
         XXHASH64(u.account_key) AS dim_account_id,
         XXHASH64('DUMMY_VAL') AS dim_aux_id,
 
-        -- 비식별화된 식별자
+        -- 외래키 
         u.user_id AS user_id,
         u.account_key AS account_key,
 
-        -- 세션 ID 표준화
+        -- 세션 ID (이벤트 원천 테이블 ID) 표준화
         XXHASH64('access_record', CAST(ar.record_id AS STRING)) AS session_id,
         'access_record' AS session_src,
         CAST(ar.record_id AS STRING) AS original_session_id,
 
-        -- 이벤트 명명 표준 준수
+        -- 이벤트 종류 (2단계 카테고리로 구분)
         'SYSTEM' AS event_category,
         'LOGIN'  AS event_action,
 
@@ -65,7 +65,7 @@
         from_utc_timestamp(ar.created_at, 'Asia/Seoul')             AS event_at_kst,
         to_date(from_utc_timestamp(ar.created_at, 'Asia/Seoul'))    AS event_date_at_kst,
 
-        -- 데이터 거버넌스용 메타데이터
+        -- 메타데이터
         CURRENT_TIMESTAMP() AS _dw_processed_at
 
     FROM access_log ar
@@ -74,6 +74,8 @@
 
     WHERE 1=1
       AND ar.created_at IS NOT NULL
+
+      -- 증분 처리 (생성시각 기준 최근 7일 이내 데이터만 업데이트)
       {% if is_incremental() %}
       AND ar.created_at > (SELECT latest_ts FROM incr_base) - INTERVAL 7 DAYS
       {% endif %}
