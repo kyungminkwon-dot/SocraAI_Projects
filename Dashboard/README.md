@@ -10,7 +10,8 @@
 
 | 대시보드 전체 화면 | 구매 코호트별 잔존율 |
 |:---:|:---:|
-| ![dashboard](./images/dashboard_overview.png) | ![cohort](./images/cohort_retention.png) |
+| ![dashboard](<img width="2540" height="1343" alt="전체화면" src="https://github.com/user-attachments/assets/528e4aa5-8e73-4ef0-a1c0-8e251a3125d8" />) | ![cohort](<img width="2480" height="918" alt="Group 27" src="https://github.com/user-attachments/assets/cf924a33-9ec2-4947-a838-9485b9a9b5bf" />
+) |
 
 > 회사정보 유출을 방지하기 위해 비식별화 처리되었습니다.
 
